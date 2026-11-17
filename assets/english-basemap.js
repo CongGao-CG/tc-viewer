@@ -47,6 +47,7 @@ class EnglishBasemap {
     this.fetchController?.abort();
     this.fetchController = new AbortController();
     this.name = name;
+    this.container.style.filter = name === 'streets' ? 'saturate(0.2)' : '';
     this.style = null;
     this.resourceError = null;
     this.clearFailures();

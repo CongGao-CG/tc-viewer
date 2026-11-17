@@ -36,12 +36,13 @@ function isAll(value) {
   return value == null || value === '' || String(value).toLowerCase() === 'all';
 }
 
-export function filterTracks(tracks, { query = '', basin, realization, startYear, endYear } = {}) {
+export function filterTracks(tracks, { query = '', basin, realization, sourceId, startYear, endYear } = {}) {
   const tokens = String(query).trim().toLowerCase().split(/\s+/).filter(Boolean);
   const bounds = [yearBound(startYear, -Infinity), yearBound(endYear, Infinity)].sort((a, b) => a - b);
   const selectedBasin = isAll(basin) ? null : String(basin).toLowerCase();
   const selectedRealization = isAll(realization) ? null : String(realization);
   return tracks.filter(track => {
+    if (!isAll(sourceId) && track.sourceId !== sourceId) return false;
     if (selectedBasin !== null && String(track.basin).toLowerCase() !== selectedBasin) return false;
     if (selectedRealization !== null && String(track.realization) !== selectedRealization) return false;
     if (track.year < bounds[0] || track.year > bounds[1]) return false;

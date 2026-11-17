@@ -98,20 +98,36 @@ function identifier(value, name, row) {
   return text;
 }
 
+function windInKnots(variable, length) {
+  if (!variable) return new Float64Array(length).fill(NaN);
+  const sourceUnits = String(scalar(variable.attributes?.units) ?? '').trim();
+  const units = sourceUnits.toLowerCase().replace(/\s|\^|\*\*/g, '');
+  let factor;
+  if (['', 'kt', 'kts', 'knot', 'knots'].includes(units)) factor = 1;
+  else if (['m/s', 'ms-1'].includes(units)) factor = 3600 / 1852;
+  else if (['km/h', 'kmh-1', 'kph'].includes(units)) factor = 1000 / 1852;
+  else throw new Error(`Unsupported wind units "${sourceUnits}". Use knots (kt), m/s, or km/h.`);
+  const values = decodeNumeric(variable.values, variable.attributes, 'wind');
+  if (factor !== 1) for (let i = 0; i < values.length; i++) values[i] *= factor;
+  return values;
+}
+
 export function buildDataset(variables, onProgress = () => {}) {
   for (const name of REQUIRED) {
     if (!variables[name]) throw new Error(`Missing required variable "${name}". Expected storm, time, lon, and lat.`);
   }
   const n = variables.storm.values.length;
   if (!n) throw new Error('The file contains no track points.');
-  for (const [name, variable] of Object.entries(variables)) {
+  for (const name of [...REQUIRED, 'realization', 'wind']) {
+    const variable = variables[name];
+    if (!variable) continue;
     if (variable.values.length !== n) throw new Error(`${name}: expected ${n} rows, found ${variable.values.length}. All variables must share one point dimension.`);
   }
 
   const time = decodeTime(variables.time.values, variables.time.attributes);
   const lon = decodeNumeric(variables.lon.values, variables.lon.attributes, 'lon');
   const lat = decodeNumeric(variables.lat.values, variables.lat.attributes, 'lat');
-  const wind = variables.wind ? decodeNumeric(variables.wind.values, variables.wind.attributes, 'wind') : new Float64Array(n).fill(NaN);
+  const wind = windInKnots(variables.wind, n);
   const groups = new Map();
   let skippedPoints = 0;
   for (let i = 0; i < n; i++) {
@@ -134,10 +150,8 @@ export function buildDataset(variables, onProgress = () => {}) {
 
   const output = {
     tracks: [], lon: new Float64Array(n), lat: new Float64Array(n), time: new Float64Array(n),
-    wind: new Float64Array(n), stateCodes: new Uint16Array(n), states: [''],
-    windUnits: String(scalar(variables.wind?.attributes?.units) ?? '').trim(), warnings: []
+    wind: new Float64Array(n), windUnits: 'kt', warnings: []
   };
-  const stateLookup = new Map([['', 0]]);
   const realizations = new Set(), basins = new Set();
   let offset = 0, groupIndex = 0, minYear = Infinity, maxYear = -Infinity;
   for (const group of groups.values()) {
@@ -158,13 +172,6 @@ export function buildDataset(variables, onProgress = () => {}) {
       output.time[offset] = time[row];
       output.wind[offset] = Number.isFinite(wind[row]) ? wind[row] : NaN;
       if (Number.isFinite(wind[row]) && (!Number.isFinite(track.maxWind) || wind[row] > track.maxWind)) track.maxWind = wind[row];
-      const state = String(variables.state?.values[row] ?? '').replace(/\0/g, '').trim();
-      if (!stateLookup.has(state)) {
-        if (output.states.length > 65535) throw new Error('The file contains more than 65,536 distinct state labels.');
-        stateLookup.set(state, output.states.length);
-        output.states.push(state);
-      }
-      output.stateCodes[offset] = stateLookup.get(state);
       offset++;
     }
     output.tracks.push(track);
@@ -175,10 +182,9 @@ export function buildDataset(variables, onProgress = () => {}) {
     if (groupIndex % 2000 === 0) onProgress(`Preparing ${groupIndex.toLocaleString()} tracks…`, 80 + groupIndex / groups.size * 19);
   }
   if (!output.tracks.length) throw new Error('The file contains no valid track positions. Check longitude and latitude values.');
-  for (const name of ['lon', 'lat', 'time', 'wind', 'stateCodes']) output[name] = output[name].subarray(0, offset);
+  for (const name of ['lon', 'lat', 'time', 'wind']) output[name] = output[name].subarray(0, offset);
   if (skippedPoints) output.warnings.push(`${skippedPoints.toLocaleString()} invalid positions were omitted from the map; gaps are preserved in the track lines.`);
   if (!variables.wind) output.warnings.push('No wind variable is present.');
-  else if (!output.windUnits) output.warnings.push('Wind units are not specified in this file. Values are shown without conversion.');
   output.stats = {
     inputPoints: n, pointCount: n - skippedPoints, trackCount: output.tracks.length, skippedPoints,
     minYear, maxYear, realizations: [...realizations].sort((a, b) => a.localeCompare(b, undefined, {numeric: true})),

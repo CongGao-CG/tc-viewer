@@ -1,21 +1,23 @@
 import { createBasemap } from './basemap.js';
 import { filterTracks, trackSegments, unwrapLongitude } from './track-geometry.js';
+import { DatasetCollection } from './dataset-collection.js';
+import { FileLoader } from './file-loader.js';
 
 const $ = id => document.getElementById(id);
 const number = value => value.toLocaleString();
 const date = value => Number.isFinite(value) ? new Date(value).toISOString().slice(0, 16).replace('T', ' ') + ' UTC' : '—';
 const pause = () => new Promise(resolve => requestAnimationFrame(resolve));
 const PAGE_SIZE = 50;
-let dataset = null;
+const datasets = new DatasetCollection();
 let matches = [];
 let page = 0;
-let worker = null;
+let loader;
+let batchAddedFiles = false;
 let map;
 let basemap;
 let layer = null;
 let popup;
 let renderId = 0;
-let fileId = 0;
 let selected = null;
 let visibleExtent = null;
 let searchTimer;
@@ -25,12 +27,8 @@ function reportError(message) {
   $('error').hidden = !message;
 }
 
-function windLabel() {
-  return dataset?.windUnits || 'units unspecified';
-}
-
 function windText(value) {
-  return Number.isFinite(value) ? `${value.toFixed(1)} (${windLabel()})` : '—';
+  return Number.isFinite(value) ? `${value.toFixed(1)} kt` : '—';
 }
 
 function detailList(element, entries) {
@@ -49,7 +47,7 @@ function closePopup() {
   $('popup').hidden = true;
 }
 
-function clearMap(message = 'Map cleared. Your dataset is still open.') {
+function clearMap(message = 'Map cleared. Your files are still open.') {
   renderId += 1;
   if (layer) map.removeLayer(layer);
   layer = null;
@@ -61,57 +59,43 @@ function clearMap(message = 'Map cleared. Your dataset is still open.') {
   $('map-status').textContent = message;
 }
 
-function stopWorker() {
-  worker?.terminate();
-  worker = null;
-  $('loading').hidden = true;
-}
-
-function closeFile() {
-  fileId += 1;
-  stopWorker();
-  clearMap('Choose a file to explore its tracks');
-  dataset = null;
-  matches = [];
-  page = 0;
-  $('track-controls').disabled = true;
-  $('dataset-info').hidden = true;
-  $('welcome').hidden = false;
+function clearFiles() {
+  clearMap('Add files to explore their tracks');
+  datasets.clear();
+  loader.cancel();
+  refreshSources();
   $('file-input').value = '';
-  $('track-list').replaceChildren();
-  $('results-count').textContent = '';
-  $('match-count').textContent = '';
-  $('pagination').hidden = true;
-  $('empty-results').hidden = false;
-  $('empty-results').textContent = 'Open a file to browse its tracks.';
   reportError('');
 }
 
 function options(element, values, allLabel) {
-  element.replaceChildren(new Option(allLabel, 'ALL'), ...values.map(value => new Option(value, value)));
+  const previous = element.value;
+  element.replaceChildren(new Option(allLabel, 'ALL'), ...values.map(value => new Option(value.label ?? value, value.id ?? value)));
+  element.value = [...element.options].some(option => option.value === previous) ? previous : 'ALL';
 }
 
 function resetFilters() {
   $('search').value = '';
   $('basin').value = 'ALL';
   $('realization').value = 'ALL';
-  $('year-start').value = dataset.stats.minYear;
-  $('year-end').value = dataset.stats.maxYear;
+  $('source-file').value = 'ALL';
+  $('year-start').value = datasets.stats.minYear ?? '';
+  $('year-end').value = datasets.stats.maxYear ?? '';
   updateMatches();
 }
 
 function updateMatches() {
-  if (!dataset) return;
   clearTimeout(searchTimer);
-  matches = filterTracks(dataset.tracks, {
+  matches = filterTracks(datasets.tracks, {
     query: $('search').value,
     basin: $('basin').value,
     realization: $('realization').value,
+    sourceId: $('source-file').value,
     startYear: $('year-start').value,
     endYear: $('year-end').value,
   });
   page = 0;
-  $('match-count').textContent = `${number(matches.length)} of ${number(dataset.tracks.length)} tracks match. Use Plot to update the map.`;
+  $('match-count').textContent = datasets.sources.size ? `${number(matches.length)} of ${number(datasets.tracks.length)} tracks match. Use Plot to update the map.` : '';
   $('plot-tracks').disabled = matches.length === 0;
   renderList();
 }
@@ -120,7 +104,7 @@ function renderList() {
   $('track-list').replaceChildren();
   $('results-count').textContent = number(matches.length);
   $('empty-results').hidden = matches.length > 0;
-  $('empty-results').textContent = 'No tracks match these filters.';
+  $('empty-results').textContent = datasets.sources.size ? 'No tracks match these filters.' : 'Add files to browse their tracks.';
   const start = page * PAGE_SIZE;
   const fragment = document.createDocumentFragment();
   for (const track of matches.slice(start, start + PAGE_SIZE)) {
@@ -133,7 +117,13 @@ function renderList() {
     title.textContent = track.id;
     const subtitle = document.createElement('small');
     subtitle.textContent = `${track.year} · realization ${track.realization} · ${track.validCount} points`;
-    button.append(title, subtitle);
+    const source = document.createElement('small');
+    source.className = 'track-file';
+    source.style.setProperty('--file-color', track.color);
+    source.textContent = track.sourceName;
+    source.title = track.sourceName;
+    button.style.setProperty('--file-color', track.color);
+    button.append(title, subtitle, source);
     button.addEventListener('click', () => selectTrack(track));
     item.append(button);
     fragment.append(item);
@@ -151,7 +141,7 @@ function fitTracks() {
 }
 
 function projectedSegments(track) {
-  return trackSegments(dataset, track).map(segment => segment.map(point => ol.proj.fromLonLat(point)));
+  return trackSegments(datasets.dataFor(track), track).map(segment => segment.map(point => ol.proj.fromLonLat(point)));
 }
 
 function mapFeature(track) {
@@ -166,7 +156,7 @@ function mapFeature(track) {
 }
 
 async function plotMatches() {
-  if (!dataset) return;
+  if (!datasets.sources.size) return;
   updateMatches();
   clearMap();
   renderList();
@@ -177,12 +167,16 @@ async function plotMatches() {
     return;
   }
   const source = new ol.source.Vector({ wrapX: true });
-  const style = new ol.style.Style({
-    stroke: new ol.style.Stroke({ color: 'rgba(195, 48, 44, 0.45)', width: 1.25 }),
-    image: new ol.style.Circle({ radius: 2, fill: new ol.style.Fill({ color: '#c3302c' }) }),
-  });
+  const styles = new Map([...datasets.sources.values()].map(file => {
+    const color = ol.color.asArray(file.color).slice();
+    color[3] = 0.5;
+    return [file.id, new ol.style.Style({
+      stroke: new ol.style.Stroke({ color, width: 1.25 }),
+      image: new ol.style.Circle({ radius: 2, fill: new ol.style.Fill({ color: file.color }) }),
+    })];
+  }));
   // Cache the aggregate as an image while panning; detail views keep vector point hit detection.
-  layer = new ol.layer.VectorImage({ source, style, imageRatio: 1.3 });
+  layer = new ol.layer.VectorImage({ source, style: feature => styles.get(feature.get('track').sourceId), imageRatio: 1.3 });
   $('map-status').textContent = `Drawing ${number(tracks.length)} tracks…`;
   await pause();
   for (let start = 0; start < tracks.length; start += 400) {
@@ -196,11 +190,13 @@ async function plotMatches() {
   map.addLayer(layer);
   visibleExtent = source.getExtent();
   $('fit-map').disabled = ol.extent.isEmpty(visibleExtent);
-  $('map-status').textContent = `${number(tracks.length)} tracks · click a line to inspect a storm`;
+  const fileCount = new Set(tracks.map(track => track.sourceId)).size;
+  $('map-status').textContent = `${number(tracks.length)} tracks · ${fileCount} ${fileCount === 1 ? 'file' : 'files'} · click a line to inspect`;
   fitTracks();
 }
 
 function selectTrack(track) {
+  const dataset = datasets.dataFor(track);
   if (!dataset) return;
   clearMap();
   selected = track;
@@ -222,18 +218,19 @@ function selectTrack(track) {
     lastPoint = coordinate;
     source.addFeature(new ol.Feature({ geometry: new ol.geom.Point(coordinate), track, pointIndex: index }));
   }
-  const lineStyle = new ol.style.Style({ stroke: new ol.style.Stroke({ color: '#cb322e', width: 2.3 }) });
-  const pointStyle = new ol.style.Style({ image: new ol.style.Circle({ radius: 4, fill: new ol.style.Fill({ color: '#cb322e' }), stroke: new ol.style.Stroke({ color: 'white', width: 1.2 }) }) });
-  const labelStyle = new ol.style.Style({ text: new ol.style.Text({ text: track.id, font: '600 12px system-ui', offsetY: -17, fill: new ol.style.Fill({ color: '#172b36' }), stroke: new ol.style.Stroke({ color: 'white', width: 4 }) }) });
+  const lineStyle = new ol.style.Style({ stroke: new ol.style.Stroke({ color: track.color, width: 2.3 }) });
+  const pointStyle = new ol.style.Style({ image: new ol.style.Circle({ radius: 4, fill: new ol.style.Fill({ color: track.color }), stroke: new ol.style.Stroke({ color: 'white', width: 1.2 }) }) });
+  const labelStyle = new ol.style.Style({ text: new ol.style.Text({ text: track.id, font: '600 12px system-ui', offsetY: -17, fill: new ol.style.Fill({ color: '#27272a' }), stroke: new ol.style.Stroke({ color: 'white', width: 4 }) }) });
   if (lastPoint) source.addFeature(new ol.Feature({ geometry: new ol.geom.Point(lastPoint), isLabel: true }));
   layer = new ol.layer.Vector({ source, style: feature => feature.get('isLabel') ? labelStyle : feature.get('pointIndex') !== undefined ? pointStyle : lineStyle });
   map.addLayer(layer);
   visibleExtent = source.getExtent();
   $('fit-map').disabled = ol.extent.isEmpty(visibleExtent);
   $('selected-track').hidden = false;
+  $('selected-track').style.setProperty('--file-color', track.color);
   $('selected-name').textContent = track.id;
   detailList($('selected-details'), [
-    ['Realization', track.realization], ['Start', date(track.startTime)], ['End', date(track.endTime)],
+    ['File', track.sourceName], ['Realization', track.realization], ['Start', date(track.startTime)], ['End', date(track.endTime)],
     ['Points', number(track.validCount)], ['Peak wind', windText(track.maxWind)],
   ]);
   $('map-status').textContent = `${track.id} · realization ${track.realization} · ${number(track.validCount)} points`;
@@ -244,72 +241,84 @@ function selectTrack(track) {
 function showPoint(feature, coordinate) {
   const index = feature.get('pointIndex');
   const track = feature.get('track');
+  const dataset = datasets.dataFor(track);
+  if (!dataset) return;
   const title = document.createElement('strong');
   title.textContent = track.id;
   const list = document.createElement('dl');
   detailList(list, [
-    ['Realization', track.realization], ['Time', date(dataset.time[index])],
+    ['File', track.sourceName], ['Realization', track.realization], ['Time', date(dataset.time[index])],
     ['Latitude', `${dataset.lat[index].toFixed(3)}°`], ['Longitude', `${dataset.lon[index].toFixed(3)}°`],
-    ['Wind', windText(dataset.wind[index])], ['State', dataset.states[dataset.stateCodes[index]] || '—'],
+    ['Wind', windText(dataset.wind[index])],
   ]);
   $('popup-content').replaceChildren(title, list);
   $('popup').hidden = false;
   popup.setPosition(coordinate);
 }
 
-function acceptDataset(data, file, elapsed) {
-  dataset = data;
-  $('filename').textContent = file.name;
-  $('dataset-summary').textContent = `${number(data.stats.trackCount)} tracks · ${number(data.stats.pointCount)} points · ${number(data.stats.realizations.length)} realizations. ${(file.size / 1024 ** 2).toFixed(1)} MiB · read in ${elapsed.toFixed(1)} s.`;
-  $('dataset-warnings').textContent = data.warnings.join(' ');
-  $('dataset-warnings').hidden = data.warnings.length === 0;
-  $('dataset-info').hidden = false;
-  $('track-controls').disabled = false;
-  $('welcome').hidden = true;
-  options($('basin'), data.stats.basins, 'All basins');
-  options($('realization'), data.stats.realizations, 'All realizations');
-  for (const id of ['year-start', 'year-end']) {
-    $(id).min = data.stats.minYear;
-    $(id).max = data.stats.maxYear;
+function refreshSources(reset = false) {
+  const sources = [...datasets.sources.values()];
+  const { stats } = datasets;
+  $('dataset-summary').textContent = `${stats.fileCount} ${stats.fileCount === 1 ? 'file' : 'files'} · ${number(stats.trackCount)} tracks · ${number(stats.pointCount)} points`;
+  const warnings = sources.flatMap(source => source.dataset.warnings.map(warning => `${source.name}: ${warning}`));
+  $('dataset-warnings').textContent = warnings.join(' ');
+  $('dataset-warnings').hidden = warnings.length === 0;
+  $('dataset-info').hidden = sources.length === 0;
+  $('clear-files').hidden = sources.length === 0 && !loader?.busy;
+  $('track-controls').disabled = sources.length === 0;
+  $('welcome').hidden = sources.length > 0 || loader?.busy;
+  $('file-list').replaceChildren();
+  for (const source of sources) {
+    const item = document.createElement('li');
+    item.className = 'file-row';
+    const swatch = document.createElement('span');
+    swatch.className = 'file-swatch';
+    swatch.style.setProperty('--file-color', source.color);
+    swatch.setAttribute('aria-hidden', 'true');
+    const description = document.createElement('div');
+    description.className = 'file-description';
+    const name = document.createElement('strong');
+    name.textContent = source.name;
+    name.title = source.name;
+    const summary = document.createElement('small');
+    summary.textContent = `${number(source.dataset.stats.trackCount)} tracks · ${(source.size / 1024 ** 2).toFixed(1)} MiB`;
+    description.append(name, summary);
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'file-remove';
+    remove.textContent = '×';
+    remove.setAttribute('aria-label', `Remove ${source.name}`);
+    remove.title = `Remove ${source.name}`;
+    remove.addEventListener('click', () => {
+      clearMap('Add files to explore their tracks');
+      datasets.remove(source.id);
+      refreshSources();
+      plotMatches().catch(error => reportError(error.message));
+    });
+    item.append(swatch, description, remove);
+    $('file-list').append(item);
   }
-  resetFilters();
-  plotMatches().catch(error => reportError(`Could not draw tracks: ${error.message}`));
+  options($('source-file'), sources.map(source => ({ id: source.id, label: source.name })), 'All files');
+  options($('basin'), stats.basins, 'All basins');
+  options($('realization'), stats.realizations, 'All realizations');
+  for (const id of ['year-start', 'year-end']) {
+    $(id).min = stats.minYear ?? '';
+    $(id).max = stats.maxYear ?? '';
+  }
+  if (reset || !sources.length || !$('year-start').value || !$('year-end').value) resetFilters();
+  else updateMatches();
 }
 
-function openFile(file) {
-  if (!file) return;
-  closeFile();
-  const id = fileId;
-  const started = performance.now();
-  $('welcome').hidden = true;
-  $('loading').hidden = false;
-  $('load-progress').value = 0;
-  $('load-status').textContent = 'Opening the local file…';
-  $('map-status').textContent = `Reading ${file.name}…`;
-  try {
-    worker = new Worker(new URL('./netcdf-worker.js', import.meta.url));
-    worker.onmessage = ({ data }) => {
-      if (id !== fileId) return;
-      if (data.type === 'progress') {
-        $('load-progress').value = data.progress;
-        $('load-status').textContent = data.message;
-      } else if (data.type === 'loaded') {
-        stopWorker();
-        acceptDataset(data.dataset, file, (performance.now() - started) / 1000);
-      } else if (data.type === 'error') {
-        closeFile();
-        reportError(data.message);
-      }
-    };
-    worker.onerror = event => {
-      closeFile();
-      reportError(`Could not start the NetCDF reader. Check your internet connection and use an HTTP preview or GitHub Pages. ${event.message || ''}`);
-    };
-    worker.postMessage({ file });
-  } catch (error) {
-    closeFile();
-    reportError(`Could not open the file: ${error.message}`);
+function openFiles(files) {
+  if (!files?.length) return;
+  reportError('');
+  if (!loader.busy) {
+    batchAddedFiles = false;
+    $('load-progress').value = 0;
+    $('load-status').textContent = 'Opening local files…';
   }
+  loader.add(files);
+  $('file-input').value = '';
 }
 
 function initialise() {
@@ -326,12 +335,40 @@ function initialise() {
   } });
   map = new ol.Map({
     target: 'map', layers: basemap.layers,
+    // Trackpad zoom should work on hover, even while a sidebar control has focus.
+    interactions: ol.interaction.defaults.defaults({ onFocusOnly: false }),
     controls: [new ol.control.Zoom(), new ol.control.Rotate(), new ol.control.Attribution({ target: 'map-credits', collapsible: false }), new ol.control.ScaleLine()],
     view: new ol.View({ center: ol.proj.fromLonLat([65, 18]), zoom: 3 }),
   });
   basemap.attach(map);
   popup = new ol.Overlay({ element: $('popup'), offset: [0, -12], positioning: 'bottom-center', autoPan: { animation: { duration: 200 } } });
   map.addOverlay(popup);
+  loader = new FileLoader({
+    onProgress: ({ file, message, progress, pendingCount }) => {
+      $('load-progress').value = progress;
+      $('load-status').textContent = `${file.name}: ${message} ${pendingCount > 1 ? `(${pendingCount - 1} queued)` : ''}`;
+    },
+    onLoaded: ({ file, dataset }) => {
+      datasets.add(file, dataset);
+      batchAddedFiles = true;
+      refreshSources();
+    },
+    onError: ({ file, message }) => {
+      const previous = $('error').textContent;
+      reportError(`${previous ? previous + '\n' : ''}${file.name}: ${message}`);
+    },
+    onQueueChange: ({ busy }) => {
+      $('loading').hidden = !busy;
+      $('welcome').hidden = busy || datasets.sources.size > 0;
+      $('clear-files').hidden = !busy && !datasets.sources.size;
+    },
+    onIdle: () => {
+      refreshSources(batchAddedFiles);
+      if (batchAddedFiles && datasets.sources.size) plotMatches().catch(error => reportError(`Could not draw tracks: ${error.message}`));
+      else if (!datasets.sources.size) clearMap('Add files to explore their tracks');
+      batchAddedFiles = false;
+    },
+  });
   map.on('singleclick', event => {
     const feature = map.forEachFeatureAtPixel(event.pixel, candidate => candidate.get('isLabel') ? undefined : candidate, { hitTolerance: 6, layerFilter: candidate => candidate === layer });
     if (!feature) return closePopup();
@@ -342,10 +379,10 @@ function initialise() {
     if (event.dragging || !layer) return;
     map.getTargetElement().style.cursor = map.hasFeatureAtPixel(event.pixel, { hitTolerance: 4, layerFilter: candidate => candidate === layer }) ? 'pointer' : '';
   });
-  $('file-input').addEventListener('change', event => openFile(event.target.files[0]));
+  $('file-input').addEventListener('change', event => openFiles(Array.from(event.target.files)));
   $('welcome-open').addEventListener('click', () => $('file-input').click());
-  $('close-file').addEventListener('click', closeFile);
-  $('cancel-load').addEventListener('click', closeFile);
+  $('clear-files').addEventListener('click', clearFiles);
+  $('cancel-load').addEventListener('click', () => loader.cancel());
   $('popup-close').addEventListener('click', closePopup);
   $('clear-map').addEventListener('click', () => { clearMap(); renderList(); });
   $('fit-map').addEventListener('click', fitTracks);
@@ -354,7 +391,7 @@ function initialise() {
   $('reset-filters').addEventListener('click', resetFilters);
   $('search').addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(updateMatches, 120); });
   $('search').addEventListener('keydown', event => { if (event.key === 'Enter') plotMatches().catch(error => reportError(error.message)); });
-  for (const id of ['basin', 'realization', 'year-start', 'year-end']) $(id).addEventListener('change', updateMatches);
+  for (const id of ['source-file', 'basin', 'realization', 'year-start', 'year-end']) $(id).addEventListener('change', updateMatches);
   $('previous-page').addEventListener('click', () => { page -= 1; renderList(); });
   $('next-page').addEventListener('click', () => { page += 1; renderList(); });
   $('basemap').addEventListener('change', () => {
@@ -378,12 +415,15 @@ function initialise() {
     dragDepth = 0;
     $('drop-overlay').hidden = true;
     const files = event.dataTransfer?.files;
-    if (files?.length > 1) reportError('Open one NetCDF file at a time.');
-    else if (files?.length) openFile(files[0]);
+    if (files?.length) openFiles(Array.from(files));
   });
   document.addEventListener('keydown', event => { if (event.key === 'Escape') closePopup(); });
   window.addEventListener('pagehide', event => {
-    if (!event.persisted) { stopWorker(); basemap.dispose(); }
+    if (!event.persisted) {
+      loader.callbacks = {};
+      loader.cancel();
+      basemap.dispose();
+    }
   });
 }
 

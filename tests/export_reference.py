@@ -26,7 +26,7 @@ def json_value(value):
 
 
 def export_reference(source, destination):
-    names = ["storm", "realization", "time", "lon", "lat", "wind", "state"]
+    names = ["storm", "realization", "time", "lon", "lat", "wind"]
     attributes = {"units", "calendar", "_FillValue", "missing_value", "scale_factor", "add_offset", "_Unsigned"}
     with netCDF4.Dataset(source) as dataset:
         variables = {}
@@ -47,9 +47,15 @@ def export_reference(source, destination):
         lon = np.asarray(dataset["lon"][:])
         lat = np.asarray(dataset["lat"][:])
         wind = np.asarray(dataset["wind"][:])
+        units = getattr(dataset["wind"], "units", "kt").strip().lower()
+        if units in {"m/s", "m s-1"}:
+            wind = wind * (3600 / 1852)
+        elif units in {"km/h", "km h-1"}:
+            wind = wind * (1000 / 1852)
+        elif units not in {"", "kt", "kts", "knot", "knots"}:
+            raise ValueError(f"Unsupported reference wind units: {units}")
         storm = dataset["storm"][:]
         realization = dataset["realization"][:]
-        state = dataset["state"][:]
 
     groups = defaultdict(list)
     for row, (real, identifier) in enumerate(zip(realization, storm)):
@@ -67,13 +73,13 @@ def export_reference(source, destination):
         })
         if index in sample_positions:
             samples.append({"key": key, "lon": normalized_lon[rows], "lat": lat[rows],
-                            "wind": wind[rows], "time": milliseconds[rows], "state": state[rows]})
+                            "wind": wind[rows], "time": milliseconds[rows]})
     valid = np.isfinite(lon) & np.isfinite(lat) & (np.abs(lat) <= 90)
     expected = {
         "pointCount": int(valid.sum()), "trackCount": len(groups),
         "realizationCount": len(set(realization)),
         "bounds": [normalized_lon[valid].min(), lat[valid].min(), normalized_lon[valid].max(), lat[valid].max()],
-        "tracks": summaries, "samples": samples,
+        "tracks": summaries, "samples": samples, "windUnits": "kt",
     }
     destination.write_text(json.dumps(json_value({"variables": variables, "expected": expected}), allow_nan=False))
     print(f"Exported {len(storm):,} points / {len(groups):,} tracks to {destination}")

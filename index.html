@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Explore tropical cyclone tracks from a local NetCDF file. Your data stays in your browser.">
+  <meta name="description" content="Explore and compare tropical cyclone tracks from local NetCDF files. Your data stays in your browser.">
   <title>TC Viewer · Local cyclone tracks</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@10.2.1/ol.css">
@@ -18,18 +18,18 @@
 <body>
   <aside class="sidebar" aria-label="Track controls">
     <header class="app-header">
-      <span class="brand-mark" aria-hidden="true">◎</span>
+      <span class="brand-mark" aria-hidden="true">TC</span>
       <div><h1>TC Viewer</h1><p>Tropical cyclone tracks</p></div>
-      <span class="local-badge">Local data</span>
+      <span class="local-badge">NetCDF</span>
     </header>
     <div class="sidebar-content">
       <section class="file-section" aria-labelledby="file-heading">
-        <h2 id="file-heading">Open a dataset</h2>
+        <div class="section-heading"><h2 id="file-heading">Track files</h2><button id="clear-files" type="button" class="text-button" hidden>Remove all</button></div>
         <label id="drop-zone" class="drop-zone" for="file-input">
           <span class="file-icon" aria-hidden="true">↥</span>
-          <strong>Choose a NetCDF file</strong>
-          <span>or drop it here</span>
-          <input id="file-input" type="file" accept=".nc,.nc4,.h5,.hdf5,application/x-netcdf">
+          <strong>Add NetCDF files</strong>
+          <span>Choose files or drop them here</span>
+          <input id="file-input" type="file" multiple accept=".nc,.nc4,.h5,.hdf5,application/x-netcdf">
         </label>
         <p class="hint">Read on your computer. No file upload.</p>
         <div id="loading" hidden>
@@ -38,8 +38,8 @@
         </div>
         <p id="error" class="error" role="alert" hidden></p>
         <div id="dataset-info" class="dataset-info" hidden>
-          <div class="row"><strong id="filename"></strong><button id="close-file" type="button" class="text-button">Close</button></div>
           <p id="dataset-summary"></p>
+          <ul id="file-list" class="file-list" aria-label="Loaded files and track colors"></ul>
           <p id="dataset-warnings" class="hint" hidden></p>
         </div>
       </section>
@@ -48,6 +48,8 @@
         <legend class="sr-only">Track filters</legend>
         <section class="section" aria-labelledby="filter-heading">
           <div class="section-heading"><h2 id="filter-heading">Explore tracks</h2><button id="reset-filters" class="text-button" type="button">Reset</button></div>
+          <label for="source-file">Source file</label>
+          <select id="source-file"><option value="ALL">All files</option></select>
           <label for="search">Search</label>
           <input id="search" type="search" placeholder="Storm ID or year…" autocomplete="off" spellcheck="false">
           <div class="two-columns">
@@ -72,7 +74,7 @@
 
         <section class="section results-section" aria-labelledby="results-heading">
           <div class="section-heading"><h2 id="results-heading">Track catalogue</h2><span id="results-count" class="count"></span></div>
-          <p id="empty-results" class="hint">Open a file to browse its tracks.</p>
+          <p id="empty-results" class="hint">Add files to browse their tracks.</p>
           <ul id="track-list" class="track-list"></ul>
           <div id="pagination" class="pagination" hidden>
             <button id="previous-page" type="button" aria-label="Previous page">←</button>
@@ -85,26 +87,25 @@
       <details class="section map-options" open>
         <summary>Map appearance</summary>
         <label for="basemap">Basemap</label>
-        <select id="basemap"><option value="streets">Streets · English labels</option><option value="terrain">Terrain · land &amp; ocean depth</option><option value="none">Blank</option></select>
+        <select id="basemap"><option value="streets">Light streets · English labels</option><option value="terrain">Terrain · land &amp; ocean depth</option><option value="none">Blank</option></select>
         <p id="basemap-status" class="hint" role="status" hidden></p>
         <button id="retry-tiles" type="button" class="text-button" hidden>Retry tiles</button>
         <details id="depth-legend" hidden><summary>Ocean depth key (m)</summary><img src="assets/ocean-depth-legend.png" width="161" height="545" alt="Ocean depths from pale cyan for shallow water to nearly black for the deepest water."></details>
       </details>
-      <details class="file-help"><summary>Supported files</summary><p>NetCDF4 / HDF5 with one-dimensional <code>storm</code>, <code>time</code>, <code>lon</code>, and <code>lat</code> variables. Optional: <code>realization</code>, <code>wind</code>, and <code>state</code>.</p><p>Wind values use the file’s units. If units are missing, values are labeled “units unspecified”.</p></details>
+      <details class="file-help"><summary>Supported files</summary><p>NetCDF4 / HDF5 with one-dimensional <code>storm</code>, <code>time</code>, <code>lon</code>, and <code>lat</code> variables. Optional: <code>realization</code> and <code>wind</code>.</p><p>Wind is displayed in knots (kt). Files without wind units are treated as knots.</p></details>
     </div>
     <footer id="map-credits" aria-label="Map attribution"></footer>
   </aside>
 
   <main class="map-panel" aria-label="Track map">
     <div id="map" tabindex="0" aria-label="Interactive cyclone track map"></div>
-    <div class="map-heading"><span class="red-dot" aria-hidden="true"></span><span id="map-status" role="status">Choose a file to explore its tracks</span><button id="fit-map" type="button" title="Fit visible tracks" disabled>Fit tracks</button></div>
+    <div class="map-heading"><span class="map-dot" aria-hidden="true"></span><span id="map-status" role="status">Add files to explore their tracks</span><button id="fit-map" type="button" title="Fit visible tracks" disabled>Fit tracks</button></div>
     <div id="welcome" class="welcome">
-      <span class="eyebrow">YOUR DATA, YOUR BROWSER</span>
-      <h2>Every track.<br>A closer look.</h2>
-      <p>Open a local NetCDF dataset to see its tracks together, find a storm, and inspect each point.</p>
-      <button id="welcome-open" class="primary" type="button">Open NetCDF file <span aria-hidden="true">↗</span></button>
+      <h2>Open track files</h2>
+      <p>Add one or more NetCDF files to compare tracks and inspect individual storms.</p>
+      <button id="welcome-open" class="primary" type="button">Add files</button>
     </div>
-    <div id="drop-overlay" class="drop-overlay" hidden>Drop a NetCDF file to open it</div>
+    <div id="drop-overlay" class="drop-overlay" hidden>Drop NetCDF files to add them</div>
     <div id="popup" class="popup" hidden><button id="popup-close" type="button" aria-label="Close point details">×</button><div id="popup-content"></div></div>
   </main>
   <noscript>This viewer needs JavaScript enabled to read and plot local files.</noscript>

@@ -1,5 +1,5 @@
 const READER_URL = 'https://cdn.jsdelivr.net/npm/h5wasm@0.10.3/dist/iife/h5wasm.js';
-const VARIABLE_NAMES = ['storm', 'time', 'lon', 'lat', 'realization', 'wind', 'state'];
+const VARIABLE_NAMES = ['storm', 'time', 'lon', 'lat', 'realization', 'wind'];
 const ATTRIBUTE_NAMES = ['units', 'calendar', '_FillValue', 'missing_value', 'scale_factor', 'add_offset', '_Unsigned'];
 
 function progress(message, value) {
@@ -66,7 +66,7 @@ self.onmessage = async ({data}) => {
     fs.unmount('/input');
     mounted = false;
     const dataset = buildDataset(variables, progress);
-    const buffers = ['lon', 'lat', 'time', 'wind', 'stateCodes'].map(name => dataset[name].buffer);
+    const buffers = ['lon', 'lat', 'time', 'wind'].map(name => dataset[name].buffer);
     self.postMessage({type: 'loaded', dataset}, buffers);
   } catch (error) {
     self.postMessage({type: 'error', message: error instanceof Error ? error.message : 'The NetCDF file could not be read.'});

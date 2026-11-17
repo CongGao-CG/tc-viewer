@@ -9,8 +9,7 @@ function variables(overrides = {}) {
     time: {values: [12n, 0n, 0n, 6n], attributes: {units: 'hours since 2000-01-01 00:00:00', calendar: 'proleptic_gregorian'}},
     lon: {values: [181, 40, 179, 180]},
     lat: {values: [12, 15, 10, 11]},
-    wind: {values: [40, 20, 30, 35]},
-    state: {values: ['S1', '', 'S0', 'S1']}
+    wind: {values: [40, 20, 30, 35]}
   };
   return {...data, ...overrides};
 }
@@ -51,10 +50,46 @@ test('keeps repeated storm IDs in different realizations separate and sorts comp
   ]);
   assert.deepEqual(Array.from(data.lon), [179, -180, -179, 40]);
   assert.deepEqual(Array.from(data.wind), [30, 35, 40, 20]);
-  assert.deepEqual(Array.from(data.stateCodes).map(code => data.states[code]), ['S0', 'S1', 'S1', '']);
   assert.equal(data.tracks[0].maxWind, 40);
-  assert.equal(data.windUnits, '');
+  assert.equal(data.windUnits, 'kt');
+  assert.deepEqual(data.warnings, []);
   assert.equal(data.stats.pointCount, 4);
+});
+
+test('normalizes explicit knot aliases and converts SI wind units to knots', () => {
+  for (const units of ['kt', 'kts', 'knot', 'Knots']) {
+    const data = buildDataset(variables({wind: {values: [40, 20, 30, 35], attributes: {units}}}));
+    assert.equal(data.windUnits, 'kt');
+    assert.equal(data.tracks[0].maxWind, 40);
+    assert.deepEqual(Array.from(data.wind), [30, 35, 40, 20]);
+  }
+  for (const [units, factor] of [['m/s', 3600 / 1852], ['m s-1', 3600 / 1852], ['km/h', 1000 / 1852]]) {
+    const data = buildDataset(variables({wind: {values: [40, 20, 30, 35], attributes: {units}}}));
+    assert.equal(data.windUnits, 'kt');
+    assert.equal(data.tracks[0].maxWind, 40 * factor);
+    assert.deepEqual(Array.from(data.wind), [30, 35, 40, 20].map(value => value * factor));
+  }
+  assert.throws(() => buildDataset(variables({wind: {values: [40, 20, 30, 35], attributes: {units: 'unknown'}}})), /Unsupported wind units "unknown"/);
+});
+
+test('converts wind after applying packing and preserves missing wind values', () => {
+  const data = buildDataset(variables({wind: {
+    values: [40, 20, -999, 30],
+    attributes: {units: 'm/s', scale_factor: 0.5, add_offset: 5, _FillValue: -999}
+  }}));
+  assert.ok(Number.isNaN(data.wind[0]));
+  for (const [index, speed] of [20, 25, 15].entries()) assert.ok(Math.abs(data.wind[index + 1] - speed * 3600 / 1852) < 1e-12);
+  assert.equal(data.tracks[0].maxWind, 25 * (3600 / 1852));
+});
+
+test('ignores state entirely, including malformed values or unreadable fields', () => {
+  const input = variables({state: {values: [null]}});
+  assert.equal(buildDataset(input).stats.pointCount, 4);
+  Object.defineProperty(input, 'state', {enumerable: true, get() { throw new Error('state must not be read'); }});
+  const data = buildDataset(input);
+  assert.equal(data.stats.pointCount, 4);
+  assert.equal(Object.hasOwn(data, 'stateCodes'), false);
+  assert.equal(Object.hasOwn(data, 'states'), false);
 });
 
 test('preserves invalid-coordinate gaps instead of connecting across missing points', () => {
@@ -67,16 +102,15 @@ test('preserves invalid-coordinate gaps instead of connecting across missing poi
   assert.match(data.warnings[0], /gaps are preserved/);
 });
 
-test('optional fields default without inventing units or wind values', () => {
+test('optional wind and realization fields retain missing winds and use the default realization', () => {
   const input = variables();
   delete input.wind;
   delete input.realization;
-  delete input.state;
   const data = buildDataset(input);
   assert.equal(data.tracks.length, 1);
   assert.equal(data.tracks[0].realization, '0');
   assert.ok(data.wind.every(Number.isNaN));
-  assert.deepEqual(data.states, ['']);
+  assert.equal(data.windUnits, 'kt');
 });
 
 test('rejects incompatible shapes, missing identifiers, and wholly invalid positions', () => {

@@ -13,6 +13,7 @@ const milliseconds = performance.now() - started;
 assert.equal(dataset.stats.pointCount, expected.pointCount);
 assert.equal(dataset.stats.trackCount, expected.trackCount);
 assert.equal(dataset.stats.realizations.length, expected.realizationCount);
+assert.equal(dataset.windUnits, expected.windUnits);
 const byKey = new Map(dataset.tracks.map(track => [track.key, track]));
 for (const reference of expected.tracks) {
   const actual = byKey.get(reference.key);
@@ -26,7 +27,6 @@ const near = (actual, reference, label) => {
 for (const sample of expected.samples) {
   const track = byKey.get(sample.key);
   for (const field of ['lon', 'lat', 'time', 'wind']) near(dataset[field].subarray(track.offset, track.offset + track.count), sample[field], sample.key + ' ' + field);
-  assert.deepEqual(Array.from(dataset.stateCodes.subarray(track.offset, track.offset + track.count), code => dataset.states[code]), sample.state);
 }
 const bounds = [Infinity, Infinity, -Infinity, -Infinity];
 for (let i = 0; i < dataset.lon.length; i++) {
