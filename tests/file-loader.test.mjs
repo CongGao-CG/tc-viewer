@@ -35,8 +35,9 @@ test('reads files serially and reports progress with the active file included in
   await tick();
   assert.equal(state.workers.length, 1);
   assert.deepEqual(state.workers[0].messages, [{ file: first }]);
+  assert.deepEqual(state.progress[0], { file: first, message: 'Starting the file reader…', progress: 0, pendingCount: 2 });
   state.workers[0].send({ type: 'progress', message: 'Reading', progress: 25 });
-  assert.deepEqual(state.progress[0], { file: first, message: 'Reading', progress: 25, pendingCount: 2 });
+  assert.deepEqual(state.progress.at(-1), { file: first, message: 'Reading', progress: 25, pendingCount: 2 });
   const dataset = { tracks: ['one'] };
   state.workers[0].send({ type: 'loaded', dataset });
   assert.equal(state.workers[0].terminated, true);
@@ -163,4 +164,48 @@ test('a display callback failure reports the file and still starts the next file
   assert.match(state.errors[0].message, /Cannot display/);
   assert.equal(state.loader.busy, false);
   assert.equal(state.idle.length, 1);
+});
+
+test('a silent worker times out and the next file continues without a stale deadline', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const state = setup();
+  try {
+    const silent = { name: 'silent.nc' }, good = { name: 'good.nc' };
+    state.loader.add([silent, good]);
+    await tick();
+    context.mock.timers.tick(14999);
+    assert.equal(state.errors.length, 0);
+    assert.equal(state.workers[0].terminated, false);
+    context.mock.timers.tick(1);
+    await tick();
+    assert.equal(state.workers[0].terminated, true);
+    assert.equal(state.errors[0].file, silent);
+    assert.match(state.errors[0].message, /did not start the file reader/);
+    assert.equal(state.workers[1].messages[0].file, good);
+    state.workers[1].send({ type: 'loaded', dataset: {} });
+    await tick();
+    context.mock.timers.tick(30000);
+    assert.equal(state.errors.length, 1);
+    assert.equal(state.loaded[0].file, good);
+    assert.equal(state.loader.busy, false);
+    assert.equal(state.idle.length, 1);
+  } finally { state.loader.cancel(); }
+});
+
+test('worker progress clears the startup deadline so a long decode is not interrupted', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const state = setup();
+  try {
+    state.loader.add([{ name: 'large.nc' }]);
+    await tick();
+    state.workers[0].send({ type: 'progress', message: 'Reading longitude', progress: 40 });
+    context.mock.timers.tick(120000);
+    assert.equal(state.errors.length, 0);
+    assert.equal(state.workers[0].terminated, false);
+    assert.equal(state.loader.busy, true);
+    state.workers[0].send({ type: 'loaded', dataset: {} });
+    await tick();
+    assert.equal(state.loaded.length, 1);
+    assert.equal(state.loader.busy, false);
+  } finally { state.loader.cancel(); }
 });

@@ -29,7 +29,7 @@
           <span class="file-icon" aria-hidden="true">↥</span>
           <strong>Add NetCDF files</strong>
           <span>Choose files or drop them here</span>
-          <input id="file-input" type="file" multiple accept=".nc,.nc4,.h5,.hdf5,application/x-netcdf">
+          <input id="file-input" type="file" multiple disabled accept=".nc,.nc4,.h5,.hdf5,application/x-netcdf">
         </label>
         <p class="hint">Read on your computer. No file upload.</p>
         <div id="loading" hidden>
@@ -103,7 +103,7 @@
     <div id="welcome" class="welcome">
       <h2>Open track files</h2>
       <p>Add one or more NetCDF files to compare tracks and inspect individual storms.</p>
-      <button id="welcome-open" class="primary" type="button">Add files</button>
+      <button id="welcome-open" class="primary" type="button" disabled>Add files</button>
     </div>
     <div id="drop-overlay" class="drop-overlay" hidden>Drop NetCDF files to add them</div>
     <div id="popup" class="popup" hidden><button id="popup-close" type="button" aria-label="Close point details">×</button><div id="popup-content"></div></div>

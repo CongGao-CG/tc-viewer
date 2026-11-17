@@ -335,11 +335,13 @@ function initialise() {
   } });
   map = new ol.Map({
     target: 'map', layers: basemap.layers,
-    // Trackpad zoom should work on hover, even while a sidebar control has focus.
-    interactions: ol.interaction.defaults.defaults({ onFocusOnly: false }),
     controls: [new ol.control.Zoom(), new ol.control.Rotate(), new ol.control.Attribution({ target: 'map-credits', collapsible: false }), new ol.control.ScaleLine()],
     view: new ol.View({ center: ol.proj.fromLonLat([65, 18]), zoom: 3 }),
   });
+  // Keep the library's defaults; only wheel/trackpad zoom should ignore keyboard focus.
+  const wheelZoom = map.getInteractions().getArray().find(interaction => interaction instanceof ol.interaction.MouseWheelZoom);
+  if (wheelZoom) map.removeInteraction(wheelZoom);
+  map.addInteraction(new ol.interaction.MouseWheelZoom({ onFocusOnly: false }));
   basemap.attach(map);
   popup = new ol.Overlay({ element: $('popup'), offset: [0, -12], positioning: 'bottom-center', autoPan: { animation: { duration: 200 } } });
   map.addOverlay(popup);
@@ -379,7 +381,10 @@ function initialise() {
     if (event.dragging || !layer) return;
     map.getTargetElement().style.cursor = map.hasFeatureAtPixel(event.pixel, { hitTolerance: 4, layerFilter: candidate => candidate === layer }) ? 'pointer' : '';
   });
-  $('file-input').addEventListener('change', event => openFiles(Array.from(event.target.files)));
+  $('file-input').addEventListener('change', event => {
+    try { openFiles(Array.from(event.target.files)); }
+    catch (error) { reportError(`Could not select the file: ${error.message}`); }
+  });
   $('welcome-open').addEventListener('click', () => $('file-input').click());
   $('clear-files').addEventListener('click', clearFiles);
   $('cancel-load').addEventListener('click', () => loader.cancel());
@@ -425,7 +430,18 @@ function initialise() {
       basemap.dispose();
     }
   });
+  $('file-input').disabled = false;
+  $('welcome-open').disabled = false;
 }
 
-if (document.readyState === 'complete') initialise();
-else window.addEventListener('load', initialise, { once: true });
+function start() {
+  try { initialise(); }
+  catch (error) {
+    $('file-input').disabled = true;
+    $('welcome-open').disabled = true;
+    reportError(`The viewer could not start: ${error.message}. Reload the page to try again.`);
+  }
+}
+
+if (document.readyState === 'complete') start();
+else window.addEventListener('load', start, { once: true });

@@ -64,13 +64,15 @@ export class FileLoader {
   #advance() {
     if (this.#current) return;
     if (!this.#queue.length) return this.#settle();
-    const current = { file: this.#queue.shift(), started: performance.now(), worker: null };
+    const current = { file: this.#queue.shift(), started: performance.now(), worker: null, startupTimer: null };
     this.#current = current;
+    this.#emit('onProgress', { file: current.file, message: 'Starting the file reader…', progress: 0, pendingCount: this.pendingCount });
     try {
       const worker = this.createWorker();
       current.worker = worker;
       worker.onmessage = ({ data }) => {
         if (this.#current !== current) return;
+        clearTimeout(current.startupTimer);
         if (data.type === 'progress') {
           this.#emit('onProgress', { file: current.file, message: data.message, progress: data.progress, pendingCount: this.pendingCount });
         } else if (data.type === 'loaded') {
@@ -84,6 +86,9 @@ export class FileLoader {
         this.#finish(current, { message: event.message || 'The NetCDF reader could not start. Check your internet connection and try again.' });
       };
       worker.onmessageerror = () => this.#finish(current, { message: 'The NetCDF reader returned data that the browser could not receive.' });
+      current.startupTimer = setTimeout(() => {
+        this.#finish(current, { message: 'The browser did not start the file reader. Reload this page and select the file again.' });
+      }, 15000);
       worker.postMessage({ file: current.file });
     } catch (error) {
       this.#finish(current, { message: error.message || String(error) });
@@ -91,6 +96,7 @@ export class FileLoader {
   }
 
   #terminate(current) {
+    clearTimeout(current?.startupTimer);
     if (!current?.worker) return;
     current.worker.onmessage = null;
     current.worker.onerror = null;
