@@ -1,0 +1,8 @@
+.DS_Store
+node_modules/
+*.nc
+*.nc4
+*.h5
+*.hdf5
+test-results/
+.cache/

@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Explore tropical cyclone tracks from a local NetCDF file. Your data stays in your browser.">
+  <title>TC Viewer · Local cyclone tracks</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@10.2.1/ol.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@5.24.0/dist/maplibre-gl.css">
+  <link rel="stylesheet" href="styles.css">
+  <script defer src="https://cdn.jsdelivr.net/npm/ol@10.2.1/dist/ol.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/maplibre-contour@0.1.0/dist/index.min.js"></script>
+  <script defer src="assets/english-basemap.js"></script>
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <aside class="sidebar" aria-label="Track controls">
+    <header class="app-header">
+      <span class="brand-mark" aria-hidden="true">◎</span>
+      <div><h1>TC Viewer</h1><p>Tropical cyclone tracks</p></div>
+      <span class="local-badge">Local data</span>
+    </header>
+    <div class="sidebar-content">
+      <section class="file-section" aria-labelledby="file-heading">
+        <h2 id="file-heading">Open a dataset</h2>
+        <label id="drop-zone" class="drop-zone" for="file-input">
+          <span class="file-icon" aria-hidden="true">↥</span>
+          <strong>Choose a NetCDF file</strong>
+          <span>or drop it here</span>
+          <input id="file-input" type="file" accept=".nc,.nc4,.h5,.hdf5,application/x-netcdf">
+        </label>
+        <p class="hint">Read on your computer. No file upload.</p>
+        <div id="loading" hidden>
+          <progress id="load-progress" max="100" value="0" aria-label="Reading file"></progress>
+          <div class="row"><span id="load-status" role="status"></span><button id="cancel-load" class="text-button" type="button">Cancel</button></div>
+        </div>
+        <p id="error" class="error" role="alert" hidden></p>
+        <div id="dataset-info" class="dataset-info" hidden>
+          <div class="row"><strong id="filename"></strong><button id="close-file" type="button" class="text-button">Close</button></div>
+          <p id="dataset-summary"></p>
+          <p id="dataset-warnings" class="hint" hidden></p>
+        </div>
+      </section>
+
+      <fieldset id="track-controls" disabled>
+        <legend class="sr-only">Track filters</legend>
+        <section class="section" aria-labelledby="filter-heading">
+          <div class="section-heading"><h2 id="filter-heading">Explore tracks</h2><button id="reset-filters" class="text-button" type="button">Reset</button></div>
+          <label for="search">Search</label>
+          <input id="search" type="search" placeholder="Storm ID or year…" autocomplete="off" spellcheck="false">
+          <div class="two-columns">
+            <div><label for="basin">Basin</label><select id="basin"><option value="ALL">All basins</option></select></div>
+            <div><label for="realization">Realization</label><select id="realization"><option value="ALL">All realizations</option></select></div>
+          </div>
+          <div class="two-columns">
+            <div><label for="year-start">Start year</label><input id="year-start" type="number" step="1" placeholder="First year"></div>
+            <div><label for="year-end">End year</label><input id="year-end" type="number" step="1" placeholder="Last year"></div>
+          </div>
+          <p class="hint">Years refer to track start times.</p>
+          <div class="button-row"><button id="plot-tracks" class="primary" type="button">Plot matching tracks</button><button id="clear-map" type="button">Clear</button></div>
+          <p id="match-count" class="hint"></p>
+        </section>
+
+        <section id="selected-track" class="section selected-track" aria-labelledby="selected-heading" hidden>
+          <div class="section-heading"><h2 id="selected-heading">Selected track</h2><button id="back-to-tracks" class="text-button" type="button">All matches</button></div>
+          <strong id="selected-name"></strong>
+          <dl id="selected-details"></dl>
+          <p class="hint">Click a point on the map for its observations.</p>
+        </section>
+
+        <section class="section results-section" aria-labelledby="results-heading">
+          <div class="section-heading"><h2 id="results-heading">Track catalogue</h2><span id="results-count" class="count"></span></div>
+          <p id="empty-results" class="hint">Open a file to browse its tracks.</p>
+          <ul id="track-list" class="track-list"></ul>
+          <div id="pagination" class="pagination" hidden>
+            <button id="previous-page" type="button" aria-label="Previous page">←</button>
+            <span id="page-status"></span>
+            <button id="next-page" type="button" aria-label="Next page">→</button>
+          </div>
+        </section>
+      </fieldset>
+
+      <details class="section map-options" open>
+        <summary>Map appearance</summary>
+        <label for="basemap">Basemap</label>
+        <select id="basemap"><option value="streets">Streets · English labels</option><option value="terrain">Terrain · land &amp; ocean depth</option><option value="none">Blank</option></select>
+        <p id="basemap-status" class="hint" role="status" hidden></p>
+        <button id="retry-tiles" type="button" class="text-button" hidden>Retry tiles</button>
+        <details id="depth-legend" hidden><summary>Ocean depth key (m)</summary><img src="assets/ocean-depth-legend.png" width="161" height="545" alt="Ocean depths from pale cyan for shallow water to nearly black for the deepest water."></details>
+      </details>
+      <details class="file-help"><summary>Supported files</summary><p>NetCDF4 / HDF5 with one-dimensional <code>storm</code>, <code>time</code>, <code>lon</code>, and <code>lat</code> variables. Optional: <code>realization</code>, <code>wind</code>, and <code>state</code>.</p><p>Wind values use the file’s units. If units are missing, values are labeled “units unspecified”.</p></details>
+    </div>
+    <footer id="map-credits" aria-label="Map attribution"></footer>
+  </aside>
+
+  <main class="map-panel" aria-label="Track map">
+    <div id="map" tabindex="0" aria-label="Interactive cyclone track map"></div>
+    <div class="map-heading"><span class="red-dot" aria-hidden="true"></span><span id="map-status" role="status">Choose a file to explore its tracks</span><button id="fit-map" type="button" title="Fit visible tracks" disabled>Fit tracks</button></div>
+    <div id="welcome" class="welcome">
+      <span class="eyebrow">YOUR DATA, YOUR BROWSER</span>
+      <h2>Every track.<br>A closer look.</h2>
+      <p>Open a local NetCDF dataset to see its tracks together, find a storm, and inspect each point.</p>
+      <button id="welcome-open" class="primary" type="button">Open NetCDF file <span aria-hidden="true">↗</span></button>
+    </div>
+    <div id="drop-overlay" class="drop-overlay" hidden>Drop a NetCDF file to open it</div>
+    <div id="popup" class="popup" hidden><button id="popup-close" type="button" aria-label="Close point details">×</button><div id="popup-content"></div></div>
+  </main>
+  <noscript>This viewer needs JavaScript enabled to read and plot local files.</noscript>
+  <script>
+    if (location.protocol === 'file:') {
+      const message = document.getElementById('error');
+      message.hidden = false;
+      message.textContent = 'For local preview, run npm run preview in the project folder and open http://localhost:8000. Browser workers require an HTTP website.';
+    }
+  </script>
+</body>
+</html>
