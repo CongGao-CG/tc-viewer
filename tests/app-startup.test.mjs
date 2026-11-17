@@ -8,6 +8,13 @@ const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const tick = () => new Promise(resolve => setImmediate(resolve));
 let imports = 0;
 
+function sampleDataset(longitude = 60) {
+  const values = { storm: ['AS001', 'AS001'], time: [0, 6], lon: [longitude, longitude + 1], lat: [10, 11], wind: [40, 50] };
+  return buildDataset(Object.fromEntries(Object.entries(values).map(([name, values]) => [name, {
+    values, attributes: name === 'time' ? { units: 'hours since 2020-01-01' } : {},
+  }])));
+}
+
 class Target {
   listeners = new Map();
   addEventListener(type, callback) {
@@ -44,6 +51,7 @@ class Element extends Target {
 }
 
 function harness({ mapError, missingLibrary = false } = {}) {
+  const mapCalls = { addedLayers: [], removedLayers: [], fits: [] };
   const elements = new Map([...html.matchAll(/<[^>]+\bid="([^"]+)"[^>]*>/g)].map(match => [match[1], new Element(match[1], match[0])]));
   const window = new Target();
   const document = Object.assign(new Target(), {
@@ -72,15 +80,15 @@ function harness({ mapError, missingLibrary = false } = {}) {
     on(type, fn) { this.addEventListener(type, fn); }
     un() {}
     addOverlay() {}
-    addLayer() {}
-    removeLayer() {}
+    addLayer(layer) { mapCalls.addedLayers.push(layer); }
+    removeLayer(layer) { mapCalls.removedLayers.push(layer); }
     getView() { return this.view; }
     addInteraction(item) { this.interactions.push(item); }
     removeInteraction(item) { this.interactions = this.interactions.filter(value => value !== item); }
     getInteractions() { return { getArray: () => this.interactions, remove: item => this.removeInteraction(item), push: item => this.addInteraction(item) }; }
   }
   const ol = {
-    Map: MapView, View: class { fit() {} }, Overlay: class { setPosition() {} },
+    Map: MapView, View: class { fit(...args) { mapCalls.fits.push(args); } }, Overlay: class { setPosition() {} },
     Feature: class { constructor(value) { this.value = value; } get(key) { return this.value[key]; } },
     interaction: { MouseWheelZoom },
     control: { Zoom: Value, Rotate: Value, Attribution: Value, ScaleLine: Value },
@@ -112,7 +120,7 @@ function harness({ mapError, missingLibrary = false } = {}) {
   const saved = new Map(Object.keys(globals).map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   for (const [key, value] of Object.entries(globals)) Object.defineProperty(globalThis, key, { value, writable: true, configurable: true });
   return {
-    elements, workers, window,
+    elements, workers, window, mapCalls,
     async boot() {
       await import(`../js/app.js?startup-test=${++imports}`);
       window.emit('load');
@@ -146,14 +154,57 @@ test('actual app startup connects file selection, worker progress, and loaded ca
     assert.match(state.elements.get('load-status').textContent, /sample.nc.*Starting the file reader/);
     state.workers[0].send({ type: 'progress', message: 'Reading longitude', progress: 40 });
     assert.match(state.elements.get('load-status').textContent, /sample.nc.*Reading longitude/);
-    const variables = Object.fromEntries(Object.entries({ storm: ['AS001', 'AS001'], time: [0, 6], lon: [60, 61], lat: [10, 11], wind: [40, 50] }).map(([name, values]) => [name, { values, attributes: name === 'time' ? { units: 'hours since 2020-01-01' } : {} }]));
-    state.workers[0].send({ type: 'loaded', dataset: buildDataset(variables) });
+    state.workers[0].send({ type: 'loaded', dataset: sampleDataset() });
     await tick();
     assert.equal(state.elements.get('track-controls').disabled, false);
     assert.match(state.elements.get('dataset-summary').textContent, /1 file.*1 tracks.*2 points/);
     assert.equal(state.elements.get('file-list').children.length, 1);
     assert.equal(state.elements.get('error').hidden, true);
     assert.equal(state.workers[0].terminated, true);
+    assert.deepEqual(state.mapCalls, { addedLayers: [], removedLayers: [], fits: [] });
+    state.elements.get('plot-tracks').click();
+    await tick();
+    assert.equal(state.mapCalls.addedLayers.length, 1);
+    assert.equal(state.mapCalls.fits.length, 1);
+  } finally { state.cleanup(); }
+});
+
+test('loading a batch or adding another file preserves the map until Plot is clicked', async () => {
+  const state = harness();
+  try {
+    await state.boot();
+    const input = state.elements.get('file-input');
+    input.files = [new File(['a'], 'first.nc'), new File(['b'], 'second.nc')];
+    input.emit('change');
+    await tick();
+    state.workers[0].send({ type: 'loaded', dataset: sampleDataset() });
+    await tick();
+    assert.deepEqual(state.mapCalls, { addedLayers: [], removedLayers: [], fits: [] });
+    state.workers[1].send({ type: 'loaded', dataset: sampleDataset(70) });
+    await tick();
+    assert.match(state.elements.get('dataset-summary').textContent, /2 files.*2 tracks.*4 points/);
+    assert.deepEqual(state.mapCalls, { addedLayers: [], removedLayers: [], fits: [] });
+
+    state.elements.get('plot-tracks').click();
+    await tick();
+    assert.equal(state.mapCalls.addedLayers.length, 1);
+    assert.equal(state.mapCalls.fits.length, 1);
+    const plottedLayer = state.mapCalls.addedLayers[0];
+    input.files = [new File(['c'], 'third.nc')];
+    input.emit('change');
+    await tick();
+    state.workers[2].send({ type: 'loaded', dataset: sampleDataset(80) });
+    await tick();
+    assert.match(state.elements.get('dataset-summary').textContent, /3 files.*3 tracks.*6 points/);
+    assert.deepEqual(state.mapCalls.addedLayers, [plottedLayer]);
+    assert.deepEqual(state.mapCalls.removedLayers, []);
+    assert.equal(state.mapCalls.fits.length, 1);
+
+    state.elements.get('plot-tracks').click();
+    await tick();
+    assert.equal(state.mapCalls.addedLayers.length, 2);
+    assert.deepEqual(state.mapCalls.removedLayers, [plottedLayer]);
+    assert.equal(state.mapCalls.fits.length, 2);
   } finally { state.cleanup(); }
 });
 

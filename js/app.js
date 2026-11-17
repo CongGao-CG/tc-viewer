@@ -59,6 +59,12 @@ function clearMap(message = 'Map cleared. Your files are still open.') {
   $('map-status').textContent = message;
 }
 
+function showPlotPrompt() {
+  $('map-status').textContent = datasets.sources.size
+    ? `${number(datasets.tracks.length)} tracks loaded · click Plot matching tracks to draw`
+    : 'Add files to explore their tracks';
+}
+
 function clearFiles() {
   clearMap('Add files to explore their tracks');
   datasets.clear();
@@ -293,7 +299,7 @@ function refreshSources(reset = false) {
       clearMap('Add files to explore their tracks');
       datasets.remove(source.id);
       refreshSources();
-      plotMatches().catch(error => reportError(error.message));
+      showPlotPrompt();
     });
     item.append(swatch, description, remove);
     $('file-list').append(item);
@@ -366,8 +372,8 @@ function initialise() {
     },
     onIdle: () => {
       refreshSources(batchAddedFiles);
-      if (batchAddedFiles && datasets.sources.size) plotMatches().catch(error => reportError(`Could not draw tracks: ${error.message}`));
-      else if (!datasets.sources.size) clearMap('Add files to explore their tracks');
+      if (!datasets.sources.size) clearMap('Add files to explore their tracks');
+      else if (batchAddedFiles && !layer) showPlotPrompt();
       batchAddedFiles = false;
     },
   });

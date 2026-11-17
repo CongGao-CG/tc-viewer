@@ -6,9 +6,10 @@ Explore and compare tropical cyclone tracks from your own NetCDF files on the Gi
 
 1. Open the project’s GitHub Pages website.
 2. Click **Add NetCDF files** and select one or more files, or drag them onto the page.
-3. Wait for loading to finish. Tracks from all loaded files appear together, with colors shown beside their source files.
+3. Wait for loading to finish. Files and tracks appear in the catalogue; loading does not draw tracks or move the map.
+4. Choose your filters, then click **Plot matching tracks** to draw the overview, or select an individual track from the catalogue.
 
-You can add more files at any time. The loaded-file list shows each file’s color and track count. Click **×** beside a file to remove it, or **Remove all** to start over. Files load one at a time; **Cancel** stops pending files and keeps files already loaded. A file that fails to load does not remove the others.
+You can add more files at any time without changing the current map. The loaded-file list shows each file’s color and track count. Click **×** beside a file to remove it and clear the displayed tracks, or **Remove all** to start over. Files load one at a time; **Cancel** stops pending files and keeps files already loaded. A file that fails to load does not remove the others.
 
 Your files are read locally in your browser. They are not uploaded or modified. Refreshing or closing the page clears the loaded data; select the files again to reopen them.
 
